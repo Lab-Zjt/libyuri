@@ -1,6 +1,7 @@
 #include <iostream>
 #include <variant>
 #include "yuri.h"
+#include "parser.h"
 
 using namespace std;
 
@@ -39,100 +40,7 @@ struct Derived : Object, O2 {
  });
 };
 
-template<typename ...Ts>
-struct overloaded : public Ts ... {
-  using Ts::operator()...;
-};
-
-template<typename ...Ts>
-overloaded(Ts...) -> overloaded<Ts...>;
-
-struct TokenBase { std::string str; };
-
-struct LBracket : TokenBase {};
-struct RBracket : TokenBase {};
-
-struct LCurly : TokenBase {};
-struct RCurly : TokenBase {};
-
-struct String : TokenBase {};
-
-struct Colon : TokenBase {};
-struct Comma : TokenBase {};
-
-struct End : TokenBase {};
-
-using Token = variant<LBracket, RBracket, LCurly, RCurly, String, Colon, Comma, End>;
-
-class JsonParser {
-  const string &str;
-  size_t off = 0;
-  bool is_stop = false;
- public:
-  JsonParser(const string &s) : str(s) {}
-  Token GetNextToken() {
-    while (isspace(str[off]) && off < str.size())off++;
-    if (off >= str.size())return End{};
-    size_t begin = off, end;
-
-    switch (str[off]) {
-      case '{': {
-        end = ++off;
-        return LCurly{str.substr(begin, end - begin)};
-      }
-      case '}': {
-        end = ++off;
-        return RCurly{str.substr(begin, end - begin)};
-      }
-      case ':': {
-        end = ++off;
-        return Colon{str.substr(begin, end - begin)};
-      }
-      case '[': {
-        end = ++off;
-        return LBracket{str.substr(begin, end - begin)};
-      }
-      case ']': {
-        end = ++off;
-        return RBracket{str.substr(begin, end - begin)};
-      }
-      case ',': {
-        end = ++off;
-        return Comma{str.substr(begin, end - begin)};
-      }
-      case '"': {
-        while (str[off] != '"' && str[off] != '\\' && off < str.size())off++;
-        if (off == str.size() && str[off] != '"')throw std::runtime_error("invalid json");
-        end = ++off;
-        return String{str.substr(begin, end - begin)};
-      }
-      default: {
-        while (!isspace(str[off]) && str[off] != ',')off++;
-        end = off;
-        return String{str.substr(begin, end - begin)};
-      }
-    }
-  }
-  void ParseSpace() {
-
-  }
-  template<typename T>
-  T ParseNumber() {}
-  template<typename T>
-  T ParseString() {}
-  template<typename T>
-  T ParseBool() {}
-  template<typename T>
-  T ParseArray() {}
-  template<typename T>
-  T ParseObject() {
-    Object obj;
-    auto key = ParseString<string>();
-
-  }
-};
-
-using parse_func = std::function<bool(const std::string &, void *)>;
+using parse_func = std::function<bool(const std::string &, size_t &off, void *)>;
 
 inline static unordered_map<reflect::TypeID, parse_func> parser;
 
@@ -142,10 +50,12 @@ string trim(const std::string &str) {
   return str.substr(pos1, pos2 - pos1 + 1);
 }
 
-inline static bool parse(reflect::TypeID id, const std::string &str, void *ptr) {
+inline static bool parse(reflect::TypeID id, const std::string &str, size_t &off, void *ptr) {
+  PARSE_SPACE();
   if (auto it = parser.find(id); it != parser.end()) {
-    return it->second(trim(str), ptr);
+    return it->second(str, off, ptr);
   } else {
+    ERROR << "no such handler\n";
     return false;
   }
 }
@@ -153,100 +63,202 @@ inline static bool parse(reflect::TypeID id, const std::string &str, void *ptr) 
 template<typename T>
 parse_func get_parse_func() {
   if constexpr (std::is_same_v<T, bool>) {
-    return [](const std::string &str, void *ptr) -> bool {
-      if (str == "true") {
-        *static_cast<bool *>(ptr) = true;
-      } else if (str == "false") {
-        *static_cast<bool *>(ptr) = false;
+    return [](const std::string &str, size_t &off, void *ptr) -> bool {
+      PARSE_SPACE();
+      auto &t = *static_cast<T *>(ptr);
+      if (str[off] == 't') {
+        if (str.substr(off, 4) == "true") {
+          t = true;
+          off += 4;
+        } else {
+          PARSE_ERROR("bool");
+          return false;
+        }
+      } else if (str[off] == 'f') {
+        if (str.substr(off, 5) == "false") {
+          t = false;
+          off += 5;
+        } else {
+          PARSE_ERROR("bool");
+          return false;
+        }
       } else {
+        PARSE_ERROR("bool");
         return false;
       }
-      return true;
     };
   } else if constexpr (std::is_integral_v<T>) {
-    return [](const std::string &str, void *ptr) -> bool {
-      auto val = strtoll(str.c_str(), nullptr, 10);
-      if (errno == ERANGE)return false;
-      *static_cast<T *>(ptr) = static_cast<T>(val);
+    return [](const std::string &str, size_t &off, void *ptr) -> bool {
+      PARSE_SPACE();
+      auto &t = *static_cast<T *>(ptr);
+      char *end;
+      auto val = strtoll(str.c_str() + off, &end, 10);
+      if (errno != 0 || end == str.c_str()) {
+        PARSE_ERROR("integral");
+        return false;
+      }
+      off = end - str.c_str();
+      t = static_cast<T>(val);
       return true;
     };
   } else if constexpr(std::is_floating_point_v<T>) {
-    return [](const std::string &str, void *ptr) -> bool {
-      auto val = strtof64(str.c_str(), nullptr);
-      if (errno == ERANGE) return false;
-      *static_cast<T *>(ptr) = static_cast<T>(val);
+    return [](const std::string &str, size_t &off, void *ptr) -> bool {
+      PARSE_SPACE();
+      auto &t = *static_cast<T *>(ptr);
+      char *end;
+      auto val = strtof64(str.c_str() + off, &end);
+      if (errno != 0 || end == str.c_str()) {
+        PARSE_ERROR("floating_point");
+        return false;
+      }
+      off = end - str.c_str();
+      t = static_cast<T>(val);
       return true;
     };
   } else if constexpr(std::is_same_v<T, std::string>) {
-    return [](const std::string &str, void *ptr) -> bool {
-      if (str.size() < 2) return false;
-      if (str[0] == '"' && str[str.size() - 1] == '"') {
-        *static_cast<T *>(ptr) = str.substr(1, str.size() - 2);
-        return true;
+    return [](const std::string &str, size_t &off, void *ptr) -> bool {
+      auto &t = *static_cast<T *>(ptr);
+      PARSE_SPACE();
+      if (str.size() - off < 2) {
+        PARSE_ERROR("string");
+        return false;
       }
-      return false;
+      if (str[off] != '"') {
+        PARSE_ERROR("string");
+        return false;
+      }
+      auto save = off;
+      // "
+      off += 1;
+      // string content
+      while (str[off] != '"' && str[off - 1] != '\\' && off < str.size())off++;
+      if (off >= str.size() || str[off] != '"') {
+        PARSE_ERROR("string");
+        off = save;
+        return false;
+      }
+      t = str.substr(save + 1, off - (save + 1));
+      // "
+      off += 1;
+      return true;
     };
   } else if constexpr (experimental::is_detected_v<reflect::has_begin_t, T>
       && experimental::is_detected_v<reflect::has_end_t, T>) {
-    return [](const std::string &str, void *ptr) -> bool {
-      if (str.front() != '[' || str.back() != ']')return false;
+    return [](const std::string &str, size_t &off, void *ptr) -> bool {
+      if (!parse_bracket_left(str, off)) {
+        PARSE_ERROR("[");
+        return false;
+      }
       auto &vec = *static_cast<T *>(ptr);
-      using vtype = typename T::value_type;
-      vtype v;
-      size_t pos0 = 0, pos1;
+      vec.clear();
+      using value_type = typename T::value_type;
+      value_type v;
       while (true) {
-        pos1 = str.find(',', pos0);
-        if (!parse(reflect::type_id<vtype>, str.substr(pos0, pos1 - pos0), &v))return false;
+        if (!parse(reflect::type_id<value_type>, str, off, &v)) {
+          PARSE_ERROR("array_element");
+          return false;
+        }
         vec.insert(vec.end(), v);
-        if (pos1 == string::npos)break;
-        pos0 = pos1 + 1;
+        // no comma means end of array
+        if (!parse_comma(str, off)) {
+          break;
+        }
+      }
+      if (!parse_bracket_right(str, off)) {
+        PARSE_ERROR("]");
+        return false;
       }
       return true;
     };
   } else if constexpr (experimental::is_detected_v<reflect::has_first_t, T>
       && experimental::is_detected_v<reflect::has_second_t, T>) {
-    return [](const std::string &str, void *ptr) -> bool {
-      if (str.front() != '{' || str.back() != '}')return false;
-      auto &p = *static_cast<std::pair<typename T::first_type, typename T::second_type> *>(ptr);
-      size_t pos0 = 1, pos1;
-      pos1 = str.find(':', pos0);
-      string key;
-      if (!parse(reflect::type_id<string>, str.substr(pos0, pos1 - pos0), &key))return false;
-      pos0 = pos1 + 1;
-      pos1 = str.find(',', pos0);
-      if (!parse(reflect::type_id<typename T::first_type>, str.substr(pos0, pos1 - pos0), &p.first))return false;
-      pos0 = pos1 + 1;
-      pos1 = str.find(':', pos0);
-      if (!parse(reflect::type_id<string>, str.substr(pos0, pos1 - pos0), &key))return false;
-      pos0 = pos1 + 1;
-      pos1 = str.find('}', pos0);
-      if (!parse(reflect::type_id<typename T::second_type>, str.substr(pos0, pos1 - pos0), &p.second))return false;
+    return [](const std::string &str, size_t &off, void *ptr) -> bool {
+      if (!parse_curly_left(str, off)) {
+        PARSE_ERROR("'{'");
+        return false;
+      }
+      using first_type = typename T::first_type;
+      using remove_cv_first_type = std::remove_cv_t<first_type>;
+      using second_type = typename T::second_type;
+      auto &p = *static_cast<T *>(ptr);
+      std::string key;
+      if (!parse(reflect::type_id<string>, str, off, &key)) {
+        PARSE_ERROR(key);
+        return false;
+      }
+      if (key != "first") {
+        PARSE_ERROR("first");
+        return false;
+      }
+      if (!parse_colon(str, off)) {
+        PARSE_ERROR(":");
+        return false;
+      }
+      if (!parse(reflect::type_id<remove_cv_first_type>,
+                 str,
+                 off,
+                 const_cast<remove_cv_first_type *>(&p.first))) {
+        PARSE_ERROR(key);
+        return false;
+      }
+      if (!parse_comma(str, off)) {
+        PARSE_ERROR("','");
+        return false;
+      }
+      if (!parse(reflect::type_id<string>, str, off, &key)) {
+        PARSE_ERROR(key);
+        return false;
+      }
+      if (key != "second") {
+        PARSE_ERROR("second");
+        return false;
+      }
+      if (!parse_colon(str, off)) {
+        PARSE_ERROR(":");
+        return false;
+      }
+      if (!parse(reflect::type_id<second_type>, str, off, &p.second)) {
+        PARSE_ERROR(key);
+        return false;
+      }
+      if (!parse_curly_right(str, off)) {
+        PARSE_ERROR("'}'");
+        return false;
+      }
       return true;
     };
 
   } else if constexpr (experimental::is_detected_v<reflect::has_get_field_info_t, T>) {
-    return [](const std::string &str, void *ptr) -> bool {
-      if (str.front() != '{' || str.back() != '}')return false;
+    return [](const std::string &str, size_t &off, void *ptr) -> bool {
+      if (!parse_curly_left(str, off)) {
+        PARSE_ERROR("'{'");
+        return false;
+      }
       T &t = *static_cast<T *>(ptr);
-      size_t pos0 = 1, pos1;
       while (true) {
-        pos1 = str.find(':', pos0);
         string key;
-        if (!parse(reflect::type_id<string>, str.substr(pos0, pos1 - pos0), &key))return false;
-        pos0 = pos1 + 1;
-        while (isspace(str[pos0]))pos0++;
-        if (str[pos0] == '{')
-          pos1 = str.find('}', pos0) + 1;
-        else
-          pos1 = str.find(',', pos0);
-        size_t off = t.get_offset_by_name(key);
-        if (pos1 == string::npos) {
-          pos1 = str.find('}', pos0);
-          if (!parse(t.get_type_id_by_name(key), str.substr(pos0, pos1 - pos0), ((char *) &t) + off))return false;
+        if (!parse(reflect::type_id<string>, str, off, &key)) {
+          PARSE_ERROR(key);
+          return false;
+        }
+        if (!parse_colon(str, off)) {
+          PARSE_ERROR(":");
+          return false;
+        }
+        size_t offset = t.get_offset_by_name(key);
+        reflect::TypeID id = t.get_type_id_by_name(key);
+        if (!parse(id, str, off, ((char *) ptr) + offset)) {
+          PARSE_ERROR(key);
+          return false;
+        }
+        // no comma means end of field
+        if (!parse_comma(str, off)) {
           break;
         }
-        if (!parse(t.get_type_id_by_name(key), str.substr(pos0, pos1 - pos0), ((char *) &t) + off))return false;
-        pos0 = pos1 + 1;
+      }
+      if (!parse_curly_right(str, off)) {
+        PARSE_ERROR("'}'");
+        return false;
       }
       return true;
     };
@@ -267,8 +279,15 @@ int main() {
   parser[reflect::type_id<string>] = get_parse_func<string>();
   parser[reflect::type_id<Object>] = get_parse_func<Object>();
   parser[reflect::type_id<O2>] = get_parse_func<O2>();
-  auto o = reflect::reflect_default_serialize(obj);
-  O2 o2;
-  parse(reflect::type_id<O2>, o, &o2);
-  cout << reflect::reflect_default_serialize(o2);
+  parser[reflect::type_id<Derived>] = get_parse_func<Derived>();
+  parser[reflect::type_id<vector<Object>>] = get_parse_func<vector<Object>>();
+  parser[reflect::type_id<unordered_map<string, Object>>] = get_parse_func<unordered_map<string, Object>>();
+  parser[reflect::type_id<std::pair<const std::string, Object>>] =
+      get_parse_func<std::pair<const string, Object>>();
+  auto o = reflect::reflect_default_serialize(d);
+  Derived o2;
+  size_t off = 0;
+  parse(reflect::type_id<Derived>, o, off, &o2);
+  cout << reflect::reflect_default_serialize(d) << '\n';
+  cout << reflect::reflect_default_serialize(o2) << '\n';
 }
