@@ -5,9 +5,10 @@
 #include <vector>
 #include <string_view>
 #include <functional>
+#include <experimental/type_traits>
 namespace reflect {
   // 强制转换
-  template<typename To,  typename From>
+  template<typename To, typename From>
   inline To force_cast(From from) {
     union {
       From f;
@@ -48,7 +49,10 @@ namespace reflect {
   };
 
   template<typename T>
-  using serialize_func = std::function<std::string(const T&, size_t)>;
+  static std::string reflect_default_serialize(const T &t);
+
+  template<typename T>
+  using serialize_func = std::function<std::string(const T &, size_t)>;
 
   template<typename T>
   using use_base_serializer_func = std::optional<std::string>(*)(_TypeID id, const T &t, size_t off);
@@ -58,6 +62,14 @@ namespace reflect {
 
   inline static std::unordered_map<_TypeID, std::string(*)(void *)> global_serializer;
 
+  template<typename D>
+  using has_begin_t = decltype(std::declval<D &>().begin());
+  template<typename D>
+  using has_end_t = decltype(std::declval<D &>().end());
+  template<typename D>
+  using has_first_t = decltype(std::declval<D &>().first);
+  template<typename D>
+  using has_second_t = decltype(std::declval<D &>().second);
   template<typename T>
   class Serializer {
    public:
@@ -76,30 +88,54 @@ namespace reflect {
         handler[_type_id<D>] = [](const T &obj, size_t offset) -> std::string {
           return obj.template get_field_by_offset<std::string>(offset);
         };
-      } else {
+      } else if constexpr (std::is_arithmetic_v<D>) {
         handler[_type_id<D>] = [](const T &obj, size_t offset) -> std::string {
           return std::to_string(obj.template get_field_by_offset<D>(offset));
         };
+      } else {
+        if constexpr (!(std::experimental::is_detected_v<has_begin_t, D>
+            && std::experimental::is_detected_v<has_end_t, D>)) {
+          static_assert(1 != 2, "can not convert");
+        } else {
+          handler[_type_id<D>] = [](const T &obj, size_t offset) -> std::string {
+            const auto &vec = obj.template get_field_by_offset<D>(offset);
+            std::stringstream ss;
+            ss << '[';
+            for (auto it = vec.begin(), end = vec.end();;) {
+              ss << reflect_default_serialize(*it);
+              it++;
+              if (it == end)break;
+              ss << ',';
+            }
+            ss << ']';
+            return ss.str();
+          };
+        }
       }
     }
   };
   template<typename T>
   static std::string reflect_default_serialize(const T &t) {
-    std::stringstream ss;
-    ss << "{";
-    for (auto it = t.get_field_info_vec().begin(), end = t.get_field_info_vec().end();;) {
-      //std::cout << it->name << "\n";
-      ss << '"' << it->name << '"' << ':';
-      bool is_string = it->template is_type<std::string>();
-      if (is_string) ss << '"';
-      ss << t._serializer.serialize(it->type_id, t, it->offset);
-      if (is_string)ss << '"';
-      it++;
-      if (it == end)break;
-      ss << ",";
+    if constexpr (std::is_arithmetic_v<T>) {
+      return std::to_string(t);
+    } else if constexpr (std::is_same_v<T, std::string>) {
+      return '"' + t + '"';
+    } else {
+      std::stringstream ss;
+      ss << "{";
+      for (auto it = t.get_field_info_vec().begin(), end = t.get_field_info_vec().end();;) {
+        ss << '"' << it->name << '"' << ':';
+        bool is_string = it->template is_type<std::string>();
+        if (is_string) ss << '"';
+        ss << t._serializer.serialize(it->type_id, t, it->offset);
+        if (is_string)ss << '"';
+        it++;
+        if (it == end)break;
+        ss << ",";
+      }
+      ss << "}";
+      return ss.str();
     }
-    ss << "}";
-    return ss.str();
   }
 }
 
@@ -303,7 +339,6 @@ static std::unordered_map<reflect::_TypeID, reflect::serialize_func<T>> create_s
   std::apply([&result](auto&& ...args) mutable {\
     (extract_tuple<T>(result, args.handler), ...);\
   },get_serializer<Bs...>());\
-  std::cout << result.size() << std::endl;\
   return result;\
 }\
 

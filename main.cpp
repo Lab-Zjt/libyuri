@@ -34,8 +34,8 @@ struct O2 {
 struct Derived : Object, O2 {
  using_reflect_inherit(Derived, Object, O2);
  reflect_field(std::string, msg, { "hello,world" });
+ reflect_field(std::vector<Object>, vec, {{ 3, 4.5 }, { 5, 7.5 }, { 7, 10.5 }});
 };
-
 
 int main() {
   //Object obj{1024, 2048.0};
