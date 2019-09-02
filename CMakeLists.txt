@@ -5,4 +5,4 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_executable(yuri_test main.cpp)
 
-target_link_libraries(yuri_test -L/home/zjt/tmp/gcc-build/home/zjt/local/lib64)
+# target_link_libraries(yuri_test -L/home/zjt/tmp/gcc-build/home/zjt/local/lib64)

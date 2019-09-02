@@ -2,6 +2,7 @@
 #include <vector>
 #include <unordered_map>
 #include <sstream>
+#include <queue>
 #include "yuri.h"
 
 using namespace std;
@@ -23,7 +24,7 @@ struct Object {
 struct O2 {
  using_reflect(O2);
  reflect_field(int, w);
- reflect_field_self_define(Object, obj);
+ reflect_field(Object, obj);
  reflect_field(string, str);
 };
 
@@ -35,6 +36,10 @@ struct Derived : Object, O2 {
  using_reflect_inherit(Derived, Object, O2);
  reflect_field(std::string, msg, { "hello,world" });
  reflect_field(std::vector<Object>, vec, {{ 3, 4.5 }, { 5, 7.5 }, { 7, 10.5 }});
+ reflect_field(with_comma(unordered_map<string, Object>), o, {
+   { "123", Object{.i = 17, .d = 23.24}},
+   { "456", Object{.i = 24, .d = 34.56}}
+ });
 };
 
 int main() {
@@ -46,4 +51,5 @@ int main() {
   const Object obj2{20, 4.0};
   Derived d{obj2};
   cout << reflect::reflect_default_serialize(d) << "\n";
+
 }

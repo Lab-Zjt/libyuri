@@ -18,50 +18,45 @@ namespace reflect {
   }
   // 将成员指针转换为偏移量
   template<typename _Mp>
-  inline size_t _member_pointer_to_offset(_Mp _p) {
+  inline size_t member_pointer_to_offset(_Mp _p) {
     return force_cast<size_t>(_p);
   }
   // 将偏移量转换为成员指针
   template<typename _T, typename _M>
-  inline _M _T::* _offset_to_member_pointer(size_t _off) {
+  inline _M _T::* offset_to_member_pointer(size_t _off) {
     return force_cast<_M _T::*>(_off);
   }
   // 类型ID，各种类型之间的ID不同，用于判断T是否属于某一种类型（思路来自std::any）
-  using _TypeID = void *;
+  using TypeID = const void *;
   template<typename _T>
-  class _Identifier {
+  class Identifier {
    private:
     static void _id() {}
    public:
-    inline static const auto ID = reinterpret_cast<void *>(&_Identifier<_T>::_id);
+    inline static const auto ID = reinterpret_cast<const void *>(&Identifier<_T>::_id);
   };
+  // 判断某个type_id是否T类型
   template<typename _T>
-  inline bool _is_type(_TypeID id) {
-    return id == _Identifier<_T>::ID;
+  inline bool is_type(TypeID id) {
+    return id == Identifier<_T>::ID;
   }
   // 字段信息，包括字段名、该字段的类型ID，该字段的偏移量
   struct FieldInfo {
     const char *name;
-    _TypeID type_id;
+    TypeID type_id;
     size_t offset;
     template<typename T>
-    bool is_type() const { return _is_type<T>(type_id); }
+    bool is_type() const { return reflect::is_type<T>(type_id); }
   };
 
+  // 序列化函数类型，传入一个void*，返回一个string
+  using serialize_func = std::string(*)(const void *);
+
+  // 简化获取type_id的代码
   template<typename T>
-  static std::string reflect_default_serialize(const T &t);
+  inline static const TypeID type_id = Identifier<T>::ID;
 
-  template<typename T>
-  using serialize_func = std::function<std::string(const T &, size_t)>;
-
-  template<typename T>
-  using use_base_serializer_func = std::optional<std::string>(*)(_TypeID id, const T &t, size_t off);
-
-  template<typename T>
-  inline static const _TypeID _type_id = _Identifier<T>::ID;
-
-  inline static std::unordered_map<_TypeID, std::string(*)(void *)> global_serializer;
-
+  // 几个
   template<typename D>
   using has_begin_t = decltype(std::declval<D &>().begin());
   template<typename D>
@@ -70,72 +65,122 @@ namespace reflect {
   using has_first_t = decltype(std::declval<D &>().first);
   template<typename D>
   using has_second_t = decltype(std::declval<D &>().second);
-  template<typename T>
+  template<typename D>
+  using has_get_field_info_t = decltype(std::declval<D &>().get_field_info_vec());
   class Serializer {
    public:
-    std::unordered_map<reflect::_TypeID, serialize_func<T>> handler;
+    inline static std::unordered_map<reflect::TypeID, serialize_func> handler;
    public:
-    std::string serialize(reflect::_TypeID type_id, const T &obj, size_t offset) {
-      if (auto it = handler.find(type_id); it != handler.end()) {
-        return it->second(obj, offset);
-      } else {
-        return global_serializer[type_id](((char *) &obj) + offset);
-      }
+    static std::string serialize(TypeID id, const void *ptr) {
+      return handler[id](ptr);
     }
-    template<typename D>
-    void register_basic_func() {
-      if constexpr (std::is_same_v<D, std::string>) {
-        handler[_type_id<D>] = [](const T &obj, size_t offset) -> std::string {
-          return obj.template get_field_by_offset<std::string>(offset);
-        };
-      } else if constexpr (std::is_arithmetic_v<D>) {
-        handler[_type_id<D>] = [](const T &obj, size_t offset) -> std::string {
-          return std::to_string(obj.template get_field_by_offset<D>(offset));
-        };
+    template<typename _T>
+    static std::string serialize(const void *ptr) {
+      using T = std::remove_cv_t<_T>;
+      return handler[type_id<T>](ptr);
+    }
+    template<typename _T>
+    static void register_basic_func() {
+      // 注册所有类型，包括无限定符、const、volatile、cv
+      using T = std::remove_cv_t<_T>;
+      using CT = std::add_const_t<T>;
+      using VT = std::add_volatile_t<T>;
+      using CVT = std::add_cv_t<T>;
+      // 字符串
+      if constexpr (std::is_same_v<T, std::string>) {
+        handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+            [](const void *ptr) -> std::string {
+              return '"' + *static_cast<const std::string *>(ptr) + '"';
+            };
+      }
+        // 算术类型
+      else if constexpr (std::is_arithmetic_v<T>) {
+        handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+            [](const void *ptr) -> std::string {
+              return std::to_string(*static_cast<const T *>(ptr));
+            };
+      }
+        // 指针类型，解一次引用再序列化
+      else if constexpr (std::is_pointer_v<T>) {
+        // 先注册指针指向的类型
+        register_basic_func<std::remove_pointer_t<T>>();
+        handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+            [](const void *ptr) -> std::string {
+              auto p = *static_cast<const T *const *>(ptr);
+              if (p == nullptr) return std::string("null");
+              return handler[type_id<std::remove_pointer_t<T>>](p);
+            };
+      }
+        // 枚举类型
+      else if constexpr (std::is_enum_v<T>) {
+        handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+            [](const void *ptr) -> std::string {
+              return std::to_string(*static_cast<const T *>(ptr));
+            };
+      }
+        // 检测有无get_field_info_vec()，如果有，代表是reflect类型
+      else if constexpr(std::experimental::is_detected_v<has_get_field_info_t, T>) {
+        handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+            [](const void *ptr) -> std::string {
+              std::stringstream ss;
+              const auto &t = *static_cast<const T *>(ptr);
+              ss << "{";
+              // 遍历所有字段并序列化
+              for (auto it = t.get_field_info_vec().begin(), end = t.get_field_info_vec().end();;) {
+                ss << '"' << it->name << '"' << ':'
+                   << serialize(it->type_id, ((char *) (&t)) + it->offset);
+                it++;
+                if (it == end)break;
+                ss << ",";
+              }
+              ss << "}";
+              return ss.str();
+            };
       } else {
-        if constexpr (!(std::experimental::is_detected_v<has_begin_t, D>
-            && std::experimental::is_detected_v<has_end_t, D>)) {
-          static_assert(1 != 2, "can not convert");
+        // 检测有无begin()、end()，如果有，则是可遍历类型
+        if constexpr (std::experimental::is_detected_v<has_begin_t, T>
+            && std::experimental::is_detected_v<has_end_t, T>) {
+          register_basic_func<typename T::value_type>();
+          handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+              [](const void *ptr) -> std::string {
+                const auto &container = *static_cast<const T *>(ptr);
+                std::stringstream ss;
+                ss << '[';
+                // 遍历所有数据并序列化
+                for (auto it = container.begin(), end = container.end();;) {
+                  ss << handler[type_id<typename T::value_type>](&(*it));
+                  it++;
+                  if (it == end)break;
+                  ss << ',';
+                }
+                ss << ']';
+                return ss.str();
+              };
+        }
+          // 检测有无first、second成员，如果有，则是pair类型
+        else if constexpr (std::experimental::is_detected_v<has_first_t, T>
+            && std::experimental::is_detected_v<has_second_t, T>) {
+          register_basic_func<typename T::first_type>();
+          register_basic_func<typename T::second_type>();
+          handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+              [](const void *ptr) -> std::string {
+                const auto &pair = *static_cast<const T *>(ptr);
+                std::stringstream ss;
+                ss << '{' << '"' << "first" << '"' << ':' << serialize<typename T::first_type>(&pair.first)
+                   << ',' << '"' << "second" << '"' << ':' << serialize<typename T::second_type>(&pair.second)
+                   << '}';
+                return ss.str();
+              };
         } else {
-          handler[_type_id<D>] = [](const T &obj, size_t offset) -> std::string {
-            const auto &vec = obj.template get_field_by_offset<D>(offset);
-            std::stringstream ss;
-            ss << '[';
-            for (auto it = vec.begin(), end = vec.end();;) {
-              ss << reflect_default_serialize(*it);
-              it++;
-              if (it == end)break;
-              ss << ',';
-            }
-            ss << ']';
-            return ss.str();
-          };
+          static_assert(std::experimental::is_detected_v<has_get_field_info_t, T>, "can not serialize");
         }
       }
     }
   };
+
   template<typename T>
   static std::string reflect_default_serialize(const T &t) {
-    if constexpr (std::is_arithmetic_v<T>) {
-      return std::to_string(t);
-    } else if constexpr (std::is_same_v<T, std::string>) {
-      return '"' + t + '"';
-    } else {
-      std::stringstream ss;
-      ss << "{";
-      for (auto it = t.get_field_info_vec().begin(), end = t.get_field_info_vec().end();;) {
-        ss << '"' << it->name << '"' << ':';
-        bool is_string = it->template is_type<std::string>();
-        if (is_string) ss << '"';
-        ss << t._serializer.serialize(it->type_id, t, it->offset);
-        if (is_string)ss << '"';
-        it++;
-        if (it == end)break;
-        ss << ",";
-      }
-      ss << "}";
-      return ss.str();
-    }
+    return Serializer::serialize<T>(&t);
   }
 }
 
@@ -150,7 +195,7 @@ namespace reflect {
 public: \
  template<typename T>\
  decltype(auto) get_field_by_offset(size_t offset){\
-   return this->*reflect::_offset_to_member_pointer<_reflect_type, T>(offset);\
+   return this->*reflect::offset_to_member_pointer<_reflect_type, T>(offset);\
  }\
  /*throw runtime_error("unknown offset") if offset not found; throw runtime_error("bad access") if offset and T is incompatible*/\
  template<typename T>\
@@ -158,7 +203,7 @@ public: \
   if (auto it = _offset_to_type_id.find(offset); it == _offset_to_type_id.end()){\
     throw std::runtime_error("unknown offset");\
   } else {\
-    if (!reflect::_is_type<T>(it->second)){\
+    if (!reflect::is_type<T>(it->second)){\
       throw std::runtime_error("bad access by offset");\
     } else {\
       return this->get_field_by_offset<T>(offset);\
@@ -176,7 +221,7 @@ public: \
  }\
  template<typename T>\
  decltype(auto) get_field_by_offset(size_t offset) const {\
-   return this->*reflect::_offset_to_member_pointer<_reflect_type, T>(offset);\
+   return this->*reflect::offset_to_member_pointer<_reflect_type, T>(offset);\
  }\
  /*throw runtime_error("unknown offset") if offset not found; throw runtime_error("bad access") if offset and T is incompatible*/\
  template<typename T>\
@@ -184,7 +229,7 @@ public: \
   if (auto it = _offset_to_type_id.find(offset); it == _offset_to_type_id.end()){\
     throw std::runtime_error("unknown offset");\
   } else {\
-    if (!reflect::_is_type<T>(it->second)){\
+    if (!reflect::is_type<T>(it->second)){\
       throw std::runtime_error("bad access by offset");\
     } else {\
       return this->get_field_by_offset<T>(offset);\
@@ -206,24 +251,20 @@ public: \
   if(auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
     throw std::runtime_error("unknown_field");\
   }else{\
-   return reflect::_is_type<T>(it->second);\
+   return reflect::is_type<T>(it->second);\
   }\
  }\
  static const vector<reflect::FieldInfo>& get_field_info_vec() {return _field_info_vec;}\
- inline static const auto _unique_var = ((reflect::global_serializer[reflect::_type_id<type>] = [](void* p){\
-    return reflect::reflect_default_serialize(*static_cast<type*>(p));\
-   }),0);
+ private:inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(),0);
 
 // 非继承的using_reflect，声明了字段名到偏移量、字段名到类型id、偏移量到类型id三种map，以及一个保存所有字段信息的vector
 #define using_reflect(type) \
  protected: \
  using _reflect_type = type;\
- friend std::string reflect::reflect_default_serialize<type>(const type &);\
  inline static std::unordered_map<std::string_view, size_t> _name_to_offset;\
- inline static std::unordered_map<std::string_view, reflect::_TypeID> _name_to_type_id;\
- inline static std::unordered_map<size_t, reflect::_TypeID> _offset_to_type_id;\
+ inline static std::unordered_map<std::string_view, reflect::TypeID> _name_to_type_id;\
+ inline static std::unordered_map<size_t, reflect::TypeID> _offset_to_type_id;\
  inline static std::vector<reflect::FieldInfo> _field_info_vec;\
- inline static reflect::Serializer<type> _serializer;\
  using_reflect_common(type);
 
 // 声明某个字段为反射字段，可以进行初始化，但需要多一个逗号
@@ -231,23 +272,13 @@ public: \
 #define reflect_field(type, name, ...)\
  public: type name __VA_ARGS__;\
  private:\
- inline static const auto _##name##_offset = reflect::_member_pointer_to_offset(&_reflect_type::name);\
- inline static const auto _##name##_type_id = reflect::_Identifier<type>::ID;\
+ inline static const auto _##name##_offset = reflect::member_pointer_to_offset(&_reflect_type::name);\
+ inline static const auto _##name##_type_id = reflect::Identifier<type>::ID;\
  inline static const auto _unique_var = (_name_to_offset[#name] = _##name##_offset, 0);\
  inline static const auto _unique_var = (_name_to_type_id[#name] = _##name##_type_id, 0);\
  inline static const auto _unique_var = (_offset_to_type_id[_##name##_offset] = _##name##_type_id, 0);\
  inline static const auto _unique_var = (_field_info_vec.emplace_back(reflect::FieldInfo{#name, _##name##_type_id, _##name##_offset}), 0);\
- inline static const auto _unique_var = (_serializer.register_basic_func<type>(), 0);
-
-#define reflect_field_self_define(type, name, ...)\
- public: type name __VA_ARGS__;\
- private:\
- inline static const auto _##name##_offset = reflect::_member_pointer_to_offset(&_reflect_type::name);\
- inline static const auto _##name##_type_id = reflect::_Identifier<type>::ID;\
- inline static const auto _unique_var = (_name_to_offset[#name] = _##name##_offset, 0);\
- inline static const auto _unique_var = (_name_to_type_id[#name] = _##name##_type_id, 0);\
- inline static const auto _unique_var = (_offset_to_type_id[_##name##_offset] = _##name##_type_id, 0);\
- inline static const auto _unique_var = (_field_info_vec.emplace_back(reflect::FieldInfo{#name, _##name##_type_id, _##name##_offset}), 0);
+ inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(), 0);
 
 // 从所有基类获取名称为map_name的map（名称范围为上述的三种map和一种vector），将它们的引用放进vector里并返回
 // 因为要使用基类的成员，所以需要被声明在类里面
@@ -279,6 +310,7 @@ get_base_map(_field_info_vec);
   return map_copy;\
 }()
 
+// 需要计算偏移量
 #define create_inherited_name_to_offset(...) [](){\
   typename decltype(call_get_base_map(_name_to_offset)<__VA_ARGS__>())::value_type::second_type::type map_copy;\
   size_t off = 0;\
@@ -315,47 +347,16 @@ get_base_map(_field_info_vec);
   return map_copy;\
 }()
 
-#define def_get_base_serializer() \
- private:\
-template<typename T, typename ...Ts>\
-static auto get_serializer() -> auto {\
-  return std::make_tuple(\
-      std::ref(T::_serializer), std::ref(Ts::_serializer)...\
-  );\
-}
-
-template<typename V, typename T, typename U>
-void extract_tuple(T &t, const U &u) {
-  for (const auto &m : u) {
-    t[m.first] = [f = m.second](const V &v, size_t off) { return f(v, off); };
-  }
-}
-
-#define def_create_serializer_handler() \
- private:\
-template<typename T, typename ...Bs>\
-static std::unordered_map<reflect::_TypeID, reflect::serialize_func<T>> create_serializer_handler() {\
-  std::unordered_map<reflect::_TypeID, reflect::serialize_func<T>> result;\
-  std::apply([&result](auto&& ...args) mutable {\
-    (extract_tuple<T>(result, args.handler), ...);\
-  },get_serializer<Bs...>());\
-  return result;\
-}\
-
 #define using_reflect_inherit(type, ...)\
  private: \
  using _reflect_type = type;\
- def_get_base_serializer();\
- def_create_serializer_handler();\
- friend std::string reflect::reflect_default_serialize<type>(const type &);\
  def_get_base_map_func();\
  inline static std::unordered_map<std::string_view, size_t> _name_to_offset = create_inherited_name_to_offset(__VA_ARGS__);\
- inline static std::unordered_map<std::string_view, reflect::_TypeID> _name_to_type_id = create_inherited_map(_name_to_type_id, __VA_ARGS__);\
- inline static std::unordered_map<size_t, reflect::_TypeID> _offset_to_type_id = create_inherited_offset_to_type_id( __VA_ARGS__);\
+ inline static std::unordered_map<std::string_view, reflect::TypeID> _name_to_type_id = create_inherited_map(_name_to_type_id, __VA_ARGS__);\
+ inline static std::unordered_map<size_t, reflect::TypeID> _offset_to_type_id = create_inherited_offset_to_type_id( __VA_ARGS__);\
  inline static std::vector<reflect::FieldInfo> _field_info_vec = create_inherited_field_info_vec(__VA_ARGS__);\
- inline static reflect::Serializer<type> _serializer{.handler = create_serializer_handler<type, __VA_ARGS__>()};\
  using_reflect_common(type)
 
-#define reflect_comma ,
+#define with_comma(...) __VA_ARGS__
 
 #endif
