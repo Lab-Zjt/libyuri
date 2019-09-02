@@ -7,6 +7,7 @@
 #include <functional>
 #include <sstream>
 #include <experimental/type_traits>
+#include "parser.h"
 namespace reflect {
   // 强制转换
   template<typename To, typename From>
@@ -57,15 +58,17 @@ namespace reflect {
   template<typename T>
   inline static const TypeID type_id = Identifier<T>::ID;
 
-  // 几个
+  // 判断是否可迭代
   template<typename D>
   using has_begin_t = decltype(std::declval<D &>().begin());
   template<typename D>
   using has_end_t = decltype(std::declval<D &>().end());
+  // 判断是否pair
   template<typename D>
   using has_first_t = decltype(std::declval<D &>().first);
   template<typename D>
   using has_second_t = decltype(std::declval<D &>().second);
+  // 判断是否reflect类型
   template<typename D>
   using has_get_field_info_t = decltype(std::declval<D &>().get_field_info_vec());
   class Serializer {
@@ -188,6 +191,326 @@ namespace reflect {
   static std::string reflect_default_serialize(const T &t) {
     return Serializer::serialize<T>(&t);
   }
+
+  // 解析空格
+  bool parse_space(const std::string &str, size_t &off) {
+    while (isspace(str[off]) && off < str.size())off++;
+    return off < str.size();
+  }
+
+#define ERROR std::cerr << __FILE__ << ':' << __LINE__ << '[' << __PRETTY_FUNCTION__ << ']'
+#define PARSE_ERROR(what) ERROR << "parse " << what << " failed. str = " << str << ", off = " << off <<'(' << str[off-2] << str[off-1] << str[off] << str[off+1] << str[off + 2]<< ')' << "\n"
+#define PARSE_SPACE() if (!parse_space(str, off)){PARSE_ERROR("space");return false;}
+
+  // 解析左大括号
+  bool parse_curly_left(const std::string &str, size_t &off) {
+    PARSE_SPACE();
+    if (str[off] != '{')return false;
+    off++;
+    return true;
+  }
+  // 解析右大括号
+  bool parse_curly_right(const std::string &str, size_t &off) {
+    PARSE_SPACE();
+    if (str[off] != '}')return false;
+    off++;
+    return true;
+  }
+
+  // 解析左中括号
+  bool parse_bracket_left(const std::string &str, size_t &off) {
+    PARSE_SPACE();
+    if (str[off] != '[')return false;
+    off++;
+    return true;
+  }
+
+  // 解析右中括号
+  bool parse_bracket_right(const std::string &str, size_t &off) {
+    PARSE_SPACE();
+    if (str[off] != ']')return false;
+    off++;
+    return true;
+  }
+
+  // 解析冒号
+  bool parse_colon(const std::string &str, size_t &off) {
+    PARSE_SPACE();
+    if (str[off] != ':')return false;
+    off++;
+    return true;
+  }
+
+  // 解析逗号
+  bool parse_comma(const std::string &str, size_t &off) {
+    PARSE_SPACE();
+    if (str[off] != ',')return false;
+    off++;
+    return true;
+  }
+
+  using parse_func = bool(*)(const std::string &, size_t &off, void *);
+
+  // 前向声明
+  template<typename T>
+  parse_func get_parse_func();
+
+  class Deserializer {
+   public:
+    inline static std::unordered_map<TypeID, parse_func> handler;
+   public:
+    inline static bool parse(reflect::TypeID id, const std::string &str, size_t &off, void *ptr) {
+      PARSE_SPACE();
+      if (auto it = handler.find(id); it != handler.end()) {
+        return it->second(str, off, ptr);
+      } else {
+        ERROR << "no such handler\n";
+        return false;
+      }
+    }
+    template<typename T>
+    inline static void register_basic_func() {
+      handler[type_id<T>] = get_parse_func<T>();
+    }
+  };
+
+  template<typename T>
+  static T reflect_default_deserialize(const std::string &str) {
+    size_t off = 0;
+    T t;
+    if (!Deserializer::parse(type_id<T>, str, off, &t)) {
+      PARSE_ERROR("can not parse");
+    }
+    return t;
+  }
+
+  // 获取类型T的反序列化函数
+  template<typename T>
+  parse_func get_parse_func() {
+    // bool类型
+    if constexpr (std::is_same_v<T, bool>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        PARSE_SPACE();
+        // 判断字符串是true还是false
+        auto &t = *static_cast<T *>(ptr);
+        if (str[off] == 't') {
+          if (str.substr(off, 4) == "true") {
+            t = true;
+            off += 4;
+          } else {
+            PARSE_ERROR("bool");
+            return false;
+          }
+        } else if (str[off] == 'f') {
+          if (str.substr(off, 5) == "false") {
+            t = false;
+            off += 5;
+          } else {
+            PARSE_ERROR("bool");
+            return false;
+          }
+        } else {
+          PARSE_ERROR("bool");
+          return false;
+        }
+      };
+    }
+    // 整数类型，先转为long long，再强转为T
+    else if constexpr (std::is_integral_v<T>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        PARSE_SPACE();
+        auto &t = *static_cast<T *>(ptr);
+        char *end;
+        auto val = strtoll(str.c_str() + off, &end, 10);
+        if (errno != 0 || end == str.c_str()) {
+          PARSE_ERROR("integral");
+          return false;
+        }
+        off = end - str.c_str();
+        t = static_cast<T>(val);
+        return true;
+      };
+    }
+    // 浮点类型，先转为double，再强转为T
+    else if constexpr(std::is_floating_point_v<T>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        PARSE_SPACE();
+        auto &t = *static_cast<T *>(ptr);
+        char *end;
+        auto val = strtof64(str.c_str() + off, &end);
+        if (errno != 0 || end == str.c_str()) {
+          PARSE_ERROR("floating_point");
+          return false;
+        }
+        off = end - str.c_str();
+        t = static_cast<T>(val);
+        return true;
+      };
+    }
+    // 字符串类型
+    else if constexpr(std::is_same_v<T, std::string>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        auto &t = *static_cast<T *>(ptr);
+        PARSE_SPACE();
+        if (str.size() - off < 2) {
+          PARSE_ERROR("string");
+          return false;
+        }
+        if (str[off] != '"') {
+          PARSE_ERROR("string");
+          return false;
+        }
+        auto save = off;
+        // 引号
+        off += 1;
+        // 字符串内容
+        while (str[off] != '"' && str[off - 1] != '\\' && off < str.size())off++;
+        if (off >= str.size() || str[off] != '"') {
+          PARSE_ERROR("string");
+          off = save;
+          return false;
+        }
+        t = str.substr(save + 1, off - (save + 1));
+        // 引号
+        off += 1;
+        return true;
+      };
+    }
+    // 可迭代类型
+    else if constexpr (std::experimental::is_detected_v<reflect::has_begin_t, T>
+        && std::experimental::is_detected_v<reflect::has_end_t, T>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        // 左中括号
+        if (!parse_bracket_left(str, off)) {
+          PARSE_ERROR("[");
+          return false;
+        }
+        auto &vec = *static_cast<T *>(ptr);
+        vec.clear();
+        using value_type = typename T::value_type;
+        Deserializer::register_basic_func<value_type>();
+        value_type v;
+        while (true) {
+          if (!Deserializer::parse(reflect::type_id<value_type>, str, off, &v)) {
+            PARSE_ERROR("array_element");
+            return false;
+          }
+          vec.insert(vec.end(), v);
+          // no comma means end of array
+          if (!parse_comma(str, off)) {
+            break;
+          }
+        }
+        // 右中括号
+        if (!parse_bracket_right(str, off)) {
+          PARSE_ERROR("]");
+          return false;
+        }
+        return true;
+      };
+    }
+    // pair类型，针对map<K,V>::value_type是pair<const K,V>做了处理，用const_cast强制转换成可变类型
+    else if constexpr (std::experimental::is_detected_v<reflect::has_first_t, T>
+        && std::experimental::is_detected_v<reflect::has_second_t, T>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        if (!parse_curly_left(str, off)) {
+          PARSE_ERROR("'{'");
+          return false;
+        }
+        using first_type = typename T::first_type;
+        using remove_cv_first_type = std::remove_cv_t<first_type>;
+        Deserializer::register_basic_func<remove_cv_first_type>();
+        using second_type = typename T::second_type;
+        Deserializer::register_basic_func<second_type>();
+        auto &p = *static_cast<T *>(ptr);
+        std::string key;
+        if (!Deserializer::parse(reflect::type_id<std::string>, str, off, &key)) {
+          PARSE_ERROR(key);
+          return false;
+        }
+        if (key != "first") {
+          PARSE_ERROR("first");
+          return false;
+        }
+        if (!parse_colon(str, off)) {
+          PARSE_ERROR(":");
+          return false;
+        }
+        if (!Deserializer::parse(reflect::type_id<remove_cv_first_type>,
+                   str,
+                   off,
+                   const_cast<remove_cv_first_type *>(&p.first))) {
+          PARSE_ERROR(key);
+          return false;
+        }
+        if (!parse_comma(str, off)) {
+          PARSE_ERROR("','");
+          return false;
+        }
+        if (!Deserializer::parse(reflect::type_id<std::string>, str, off, &key)) {
+          PARSE_ERROR(key);
+          return false;
+        }
+        if (key != "second") {
+          PARSE_ERROR("second");
+          return false;
+        }
+        if (!parse_colon(str, off)) {
+          PARSE_ERROR(":");
+          return false;
+        }
+        if (!Deserializer::parse(reflect::type_id<second_type>, str, off, &p.second)) {
+          PARSE_ERROR(key);
+          return false;
+        }
+        if (!parse_curly_right(str, off)) {
+          PARSE_ERROR("'}'");
+          return false;
+        }
+        return true;
+      };
+
+    }
+    // reflect类型
+    else if constexpr (std::experimental::is_detected_v<reflect::has_get_field_info_t, T>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        if (!parse_curly_left(str, off)) {
+          PARSE_ERROR("'{'");
+          return false;
+        }
+        T &t = *static_cast<T *>(ptr);
+        while (true) {
+          std::string key;
+          if (!Deserializer::parse(reflect::type_id<std::string>, str, off, &key)) {
+            PARSE_ERROR(key);
+            return false;
+          }
+          if (!parse_colon(str, off)) {
+            PARSE_ERROR(":");
+            return false;
+          }
+          size_t offset = t.get_offset_by_name(key);
+          reflect::TypeID id = t.get_type_id_by_name(key);
+          if (!Deserializer::parse(id, str, off, ((char *) ptr) + offset)) {
+            PARSE_ERROR(key);
+            return false;
+          }
+          // no comma means end of field
+          if (!parse_comma(str, off)) {
+            break;
+          }
+        }
+        if (!parse_curly_right(str, off)) {
+          PARSE_ERROR("'}'");
+          return false;
+        }
+        return true;
+      };
+    } else {
+      static_assert(std::experimental::is_detected_v<reflect::has_get_field_info_t, T>, "can not parse");
+    }
+  }
+
 }
 
 // 通过__COUNTER__保证每次调用该宏都产生一个唯一变量名
@@ -275,7 +598,8 @@ public: \
   }\
  }\
  static const vector<reflect::FieldInfo>& get_field_info_vec() {return _field_info_vec;}\
- private:inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(),0);
+ private:inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(),0);\
+ inline static const auto _unique_var = (reflect::Deserializer::register_basic_func<type>(), 0)
 
 // 非继承的using_reflect，声明了字段名到偏移量、字段名到类型id、偏移量到类型id三种map，以及一个保存所有字段信息的vector
 #define using_reflect(type) \
@@ -298,7 +622,8 @@ public: \
  inline static const auto _unique_var = (_name_to_type_id[#name] = _##name##_type_id, 0);\
  inline static const auto _unique_var = (_offset_to_type_id[_##name##_offset] = _##name##_type_id, 0);\
  inline static const auto _unique_var = (_field_info_vec.emplace_back(reflect::FieldInfo{#name, _##name##_type_id, _##name##_offset}), 0);\
- inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(), 0);
+ inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(), 0);\
+ inline static const auto _unique_var = (reflect::Deserializer::register_basic_func<type>(), 0);
 
 // 从所有基类获取名称为map_name的map（名称范围为上述的三种map和一种vector），将它们的引用放进vector里并返回
 // 因为要使用基类的成员，所以需要被声明在类里面
