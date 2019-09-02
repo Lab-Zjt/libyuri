@@ -1,7 +1,6 @@
 #include <iostream>
 #include <variant>
 #include "yuri.h"
-#include "parser.h"
 
 using namespace std;
 
@@ -36,7 +35,6 @@ int main() {
   const Object obj2{20, 4.0};
   Derived d{obj2};
   auto o = reflect::reflect_default_serialize(d);
-  cout << reflect::type_id<Derived> << "\n";
   auto o2 = reflect::reflect_default_deserialize<Derived>(o);
   cout << reflect::reflect_default_serialize(d) << '\n';
   cout << reflect::reflect_default_serialize(o2) << '\n';
