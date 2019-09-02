@@ -5,6 +5,7 @@
 #include <vector>
 #include <string_view>
 #include <functional>
+#include <sstream>
 #include <experimental/type_traits>
 namespace reflect {
   // 强制转换
@@ -91,6 +92,11 @@ namespace reflect {
         handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
             [](const void *ptr) -> std::string {
               return '"' + *static_cast<const std::string *>(ptr) + '"';
+            };
+      } else if constexpr (std::is_same_v<T, bool>) {
+        handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+            [](const void *ptr) -> std::string {
+              return *static_cast<const bool *>(ptr) ? "true" : "false";
             };
       }
         // 算术类型
@@ -252,6 +258,20 @@ public: \
     throw std::runtime_error("unknown_field");\
   }else{\
    return reflect::is_type<T>(it->second);\
+  }\
+ }\
+ static reflect::TypeID get_type_id_by_name(std::string_view field_name){\
+  if(auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
+    throw std::runtime_error("unknown_field");\
+  }else{\
+   return it->second;\
+  }\
+ }\
+ static size_t get_offset_by_name(std::string_view field_name){\
+  if(auto it = _name_to_offset.find(field_name); it == _name_to_offset.end()){\
+    throw std::runtime_error("unknown_field");\
+  }else{\
+   return it->second;\
   }\
  }\
  static const vector<reflect::FieldInfo>& get_field_info_vec() {return _field_info_vec;}\
