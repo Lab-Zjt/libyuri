@@ -1,5 +1,6 @@
 #include <iostream>
 #include <variant>
+#include <memory>
 #include "yuri.h"
 
 using namespace std;
@@ -25,6 +26,7 @@ struct Derived : Object, O2 {
    { "123", Object{.i = 17, .d = 23.24}},
    { "456", Object{.i = 24, .d = 34.56}}
  });
+ reflect_field(shared_ptr<Object>, so, = make_shared<Object>());
 };
 
 int main() {
@@ -34,6 +36,8 @@ int main() {
   }, .str = "8192"};
   const Object obj2{20, 4.0};
   Derived d{obj2};
+  d.so->i = 137;
+  d.so->d = 268.37;
   auto o = reflect::reflect_default_serialize(d);
   auto o2 = reflect::reflect_default_deserialize<Derived>(o);
   cout << reflect::reflect_default_serialize(d) << '\n';

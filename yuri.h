@@ -70,6 +70,13 @@ namespace reflect {
   // 判断是否reflect类型
   template<typename D>
   using has_get_field_info_t = decltype(std::declval<D &>().get_field_info_vec());
+  template<typename D>
+  using has_unique_t = decltype(std::declval<D &>().unique());
+  template<typename D>
+  using has_use_count_t = decltype(std::declval<D &>().use_count());
+  template<typename D>
+  constexpr bool is_shared_ptr_v =
+      std::experimental::is_detected_v<has_unique_t, D> && std::experimental::is_detected_v<has_use_count_t, D>;
   class Serializer {
    public:
     inline static std::unordered_map<reflect::TypeID, serialize_func> handler;
@@ -117,6 +124,17 @@ namespace reflect {
               auto p = *static_cast<const T *const *>(ptr);
               if (p == nullptr) return std::string("null");
               return handler[type_id<std::remove_pointer_t<T>>](p);
+            };
+      }
+        // 智能指针类型
+      else if constexpr (is_shared_ptr_v<T>) {
+        using element_type = typename T::element_type;
+        register_basic_func<element_type>();
+        handler[type_id<T>] = handler[type_id<CT>] = handler[type_id<VT>] = handler[type_id<CVT>] =
+            [](const void *ptr) -> std::string {
+              const auto &p = *static_cast<const T *>(ptr);
+              if (p == nullptr) return std::string("null");
+              return handler[type_id<element_type>](p.get());
             };
       }
         // 枚举类型
@@ -248,7 +266,7 @@ namespace reflect {
     return true;
   }
 
-  using parse_func = bool(*)(const std::string &, size_t &off, void *);
+  using parse_func = bool (*)(const std::string &, size_t &off, void *);
 
   // 前向声明
   template<typename T>
@@ -314,7 +332,7 @@ namespace reflect {
         }
       };
     }
-    // 整数类型，先转为long long，再强转为T
+      // 整数类型，先转为long long，再强转为T
     else if constexpr (std::is_integral_v<T>) {
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         PARSE_SPACE();
@@ -330,7 +348,7 @@ namespace reflect {
         return true;
       };
     }
-    // 浮点类型，先转为double，再强转为T
+      // 浮点类型，先转为double，再强转为T
     else if constexpr(std::is_floating_point_v<T>) {
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         PARSE_SPACE();
@@ -346,7 +364,7 @@ namespace reflect {
         return true;
       };
     }
-    // 字符串类型
+      // 字符串类型
     else if constexpr(std::is_same_v<T, std::string>) {
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         auto &t = *static_cast<T *>(ptr);
@@ -375,7 +393,7 @@ namespace reflect {
         return true;
       };
     }
-    // 可迭代类型
+      // 可迭代类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_begin_t, T>
         && std::experimental::is_detected_v<reflect::has_end_t, T>) {
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
@@ -408,7 +426,7 @@ namespace reflect {
         return true;
       };
     }
-    // pair类型，针对map<K,V>::value_type是pair<const K,V>做了处理，用const_cast强制转换成可变类型
+      // pair类型，针对map<K,V>::value_type是pair<const K,V>做了处理，用const_cast强制转换成可变类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_first_t, T>
         && std::experimental::is_detected_v<reflect::has_second_t, T>) {
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
@@ -436,9 +454,9 @@ namespace reflect {
           return false;
         }
         if (!Deserializer::parse(reflect::type_id<remove_cv_first_type>,
-                   str,
-                   off,
-                   const_cast<remove_cv_first_type *>(&p.first))) {
+                                 str,
+                                 off,
+                                 const_cast<remove_cv_first_type *>(&p.first))) {
           PARSE_ERROR(key);
           return false;
         }
@@ -470,7 +488,7 @@ namespace reflect {
       };
 
     }
-    // reflect类型
+      // reflect类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_get_field_info_t, T>) {
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         if (!parse_curly_left(str, off)) {
@@ -503,6 +521,20 @@ namespace reflect {
           PARSE_ERROR("'}'");
           return false;
         }
+        return true;
+      };
+    }
+      // 智能指针类型
+    else if constexpr(is_shared_ptr_v<T>) {
+      return [](const std::string &str, size_t &off, void *ptr) -> bool {
+        using element_type = typename T::element_type;
+        Deserializer::register_basic_func<element_type>();
+        *static_cast<T *>(ptr) = std::make_shared<element_type>();
+        if (!Deserializer::parse(type_id<element_type>, str, off, static_cast<T*>(ptr)->get())) {
+          PARSE_ERROR("pointer");
+          return false;
+        }
+
         return true;
       };
     } else {
