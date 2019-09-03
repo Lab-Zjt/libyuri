@@ -396,6 +396,8 @@ namespace reflect {
       // 可迭代类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_begin_t, T>
         && std::experimental::is_detected_v<reflect::has_end_t, T>) {
+      using value_type = typename T::value_type;
+      Deserializer::register_basic_func<value_type>();
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         // 左中括号
         if (!parse_bracket_left(str, off)) {
@@ -404,8 +406,6 @@ namespace reflect {
         }
         auto &vec = *static_cast<T *>(ptr);
         vec.clear();
-        using value_type = typename T::value_type;
-        Deserializer::register_basic_func<value_type>();
         value_type v;
         while (true) {
           if (!Deserializer::parse(reflect::type_id<value_type>, str, off, &v)) {
@@ -429,16 +429,20 @@ namespace reflect {
       // pair类型，针对map<K,V>::value_type是pair<const K,V>做了处理，用const_cast强制转换成可变类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_first_t, T>
         && std::experimental::is_detected_v<reflect::has_second_t, T>) {
+      // 需要先注册std::string以解析key
+      Deserializer::register_basic_func<std::string>();
+      // 注册first_type解析
+      using first_type = typename T::first_type;
+      using remove_cv_first_type = std::remove_cv_t<first_type>;
+      Deserializer::register_basic_func<remove_cv_first_type>();
+      // 注册second_type解析
+      using second_type = typename T::second_type;
+      Deserializer::register_basic_func<second_type>();
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         if (!parse_curly_left(str, off)) {
           PARSE_ERROR("'{'");
           return false;
         }
-        using first_type = typename T::first_type;
-        using remove_cv_first_type = std::remove_cv_t<first_type>;
-        Deserializer::register_basic_func<remove_cv_first_type>();
-        using second_type = typename T::second_type;
-        Deserializer::register_basic_func<second_type>();
         auto &p = *static_cast<T *>(ptr);
         std::string key;
         if (!Deserializer::parse(reflect::type_id<std::string>, str, off, &key)) {
@@ -490,6 +494,8 @@ namespace reflect {
     }
       // reflect类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_get_field_info_t, T>) {
+      // 需要先注册std::string以解析key
+      Deserializer::register_basic_func<std::string>();
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         if (!parse_curly_left(str, off)) {
           PARSE_ERROR("'{'");
@@ -526,11 +532,18 @@ namespace reflect {
     }
       // 智能指针类型
     else if constexpr(is_shared_ptr_v<T>) {
+      using element_type = typename T::element_type;
+      Deserializer::register_basic_func<element_type>();
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
-        using element_type = typename T::element_type;
-        Deserializer::register_basic_func<element_type>();
+        PARSE_SPACE();
+        // 解析空指针
+        if (str.substr(off, 4) == "null") {
+          *static_cast<T *>(ptr) = nullptr;
+          off += 4;
+          return true;
+        }
         *static_cast<T *>(ptr) = std::make_shared<element_type>();
-        if (!Deserializer::parse(type_id<element_type>, str, off, static_cast<T*>(ptr)->get())) {
+        if (!Deserializer::parse(type_id<element_type>, str, off, static_cast<T *>(ptr)->get())) {
           PARSE_ERROR("pointer");
           return false;
         }
@@ -553,65 +566,65 @@ namespace reflect {
 // 由偏移量获取字段、由字段名获取字段、判断字段是否某一类型、获取全部字段信息这四类方法的声明
 #define using_reflect_common(type) \
 public: \
- template<typename T>\
+ template<typename ___T>\
  decltype(auto) get_field_by_offset(size_t offset){\
-   return this->*reflect::offset_to_member_pointer<_reflect_type, T>(offset);\
+   return this->*reflect::offset_to_member_pointer<_reflect_type, ___T>(offset);\
  }\
  /*throw runtime_error("unknown offset") if offset not found; throw runtime_error("bad access") if offset and T is incompatible*/\
- template<typename T>\
+ template<typename ___T>\
  decltype(auto) get_field_by_offset_safe(size_t offset){\
   if (auto it = _offset_to_type_id.find(offset); it == _offset_to_type_id.end()){\
     throw std::runtime_error("unknown offset");\
   } else {\
-    if (!reflect::is_type<T>(it->second)){\
+    if (!reflect::is_type<___T>(it->second)){\
       throw std::runtime_error("bad access by offset");\
     } else {\
-      return this->get_field_by_offset<T>(offset);\
+      return this->get_field_by_offset<___T>(offset);\
     }\
   }\
  }\
  /*throw runtime_error("unknown field") if field not found*/\
- template<typename T>\
+ template<typename ___T>\
  decltype(auto) get_field_by_name(std::string_view field_name){\
    if(auto it = _name_to_offset.find(field_name); it == _name_to_offset.end()){\
     throw std::runtime_error("unknown field");\
    }else{\
-    return this->get_field_by_offset<T>(it->second);\
+    return this->get_field_by_offset<___T>(it->second);\
    }\
  }\
- template<typename T>\
+ template<typename ___T>\
  decltype(auto) get_field_by_offset(size_t offset) const {\
-   return this->*reflect::offset_to_member_pointer<_reflect_type, T>(offset);\
+   return this->*reflect::offset_to_member_pointer<_reflect_type, ___T>(offset);\
  }\
  /*throw runtime_error("unknown offset") if offset not found; throw runtime_error("bad access") if offset and T is incompatible*/\
- template<typename T>\
+ template<typename ___T>\
  decltype(auto) get_field_by_offset_safe(size_t offset) const {\
   if (auto it = _offset_to_type_id.find(offset); it == _offset_to_type_id.end()){\
     throw std::runtime_error("unknown offset");\
   } else {\
-    if (!reflect::is_type<T>(it->second)){\
+    if (!reflect::is_type<___T>(it->second)){\
       throw std::runtime_error("bad access by offset");\
     } else {\
-      return this->get_field_by_offset<T>(offset);\
+      return this->get_field_by_offset<___T>(offset);\
     }\
   }\
  }\
  /*throw runtime_error("unknown field") if field not found*/\
- template<typename T>\
+ template<typename ___T>\
  decltype(auto) get_field_by_name(std::string_view field_name) const {\
    if(auto it = _name_to_offset.find(field_name); it == _name_to_offset.end()){\
     throw std::runtime_error("unknown field");\
    }else{\
-    return this->get_field_by_offset<T>(it->second);\
+    return this->get_field_by_offset<___T>(it->second);\
    }\
  }\
  /*throw runtime_error("unknown_field") if field not found*/\
- template<typename T>\
+ template<typename ___T>\
  static bool field_is_type(std::string_view field_name){\
   if(auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
     throw std::runtime_error("unknown_field");\
   }else{\
-   return reflect::is_type<T>(it->second);\
+   return reflect::is_type<___T>(it->second);\
   }\
  }\
  static reflect::TypeID get_type_id_by_name(std::string_view field_name){\
@@ -649,12 +662,12 @@ public: \
  private:\
  inline static const auto _##name##_offset = reflect::member_pointer_to_offset(&_reflect_type::name);\
  inline static const auto _##name##_type_id = reflect::Identifier<type>::ID;\
- inline static const auto _unique_var = (_name_to_offset[#name] = _##name##_offset, 0);\
- inline static const auto _unique_var = (_name_to_type_id[#name] = _##name##_type_id, 0);\
- inline static const auto _unique_var = (_offset_to_type_id[_##name##_offset] = _##name##_type_id, 0);\
- inline static const auto _unique_var = (_field_info_vec.emplace_back(reflect::FieldInfo{#name, _##name##_type_id, _##name##_offset}), 0);\
- inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(), 0);\
- inline static const auto _unique_var = (reflect::Deserializer::register_basic_func<type>(), 0);
+ inline static const auto _unique_var __attribute__((used)) = (_name_to_offset[#name] = _##name##_offset, 0);\
+ inline static const auto _unique_var __attribute__((used)) = (_name_to_type_id[#name] = _##name##_type_id, 0);\
+ inline static const auto _unique_var __attribute__((used)) = (_offset_to_type_id[_##name##_offset] = _##name##_type_id, 0);\
+ inline static const auto _unique_var __attribute__((used)) = (_field_info_vec.emplace_back(reflect::FieldInfo{#name, _##name##_type_id, _##name##_offset}), 0);\
+ inline static const auto _unique_var __attribute__((used)) = (reflect::Serializer::register_basic_func<type>(), 0);\
+ inline static const auto _unique_var __attribute__((used)) = (reflect::Deserializer::register_basic_func<type>(), 0);
 
 // 从所有基类获取名称为map_name的map（名称范围为上述的三种map和一种vector），将它们的引用放进vector里并返回
 // 因为要使用基类的成员，所以需要被声明在类里面
