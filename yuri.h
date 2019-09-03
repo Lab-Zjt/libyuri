@@ -7,8 +7,12 @@
 #include <functional>
 #include <sstream>
 #include <any>
+#include <memory>
 #include <experimental/type_traits>
 namespace reflect {
+  /*
+   * 一些基础设施
+   */
   // 强制转换
   template<typename To, typename From>
   inline To force_cast(From from) {
@@ -51,9 +55,6 @@ namespace reflect {
     bool is_type() const { return reflect::is_type<T>(type_id); }
   };
 
-  // 序列化函数类型，传入一个void*，返回一个string
-  using serialize_func = std::string(*)(const void *);
-
   // 简化获取type_id的代码
   template<typename T>
   inline static const TypeID type_id = Identifier<T>::ID;
@@ -78,6 +79,14 @@ namespace reflect {
   template<typename D>
   constexpr bool is_shared_ptr_v =
       std::experimental::is_detected_v<has_unique_t, D> && std::experimental::is_detected_v<has_use_count_t, D>;
+
+  /*
+   * 序列化
+   */
+
+  // 序列化函数类型，传入一个void*，返回一个string
+  using serialize_func = std::string(*)(const void *);
+
   class Serializer {
    public:
     inline static std::unordered_map<reflect::TypeID, serialize_func> handler;
@@ -210,8 +219,12 @@ namespace reflect {
     return Serializer::serialize<T>(&t);
   }
 
+  /*
+   * 反序列化
+   */
+
   // 解析空格
-  bool parse_space(const std::string &str, size_t &off) {
+  inline bool parse_space(const std::string &str, size_t &off) {
     while (isspace(str[off]) && off < str.size())off++;
     return off < str.size();
   }
@@ -221,14 +234,14 @@ namespace reflect {
 #define PARSE_SPACE() if (!parse_space(str, off)){PARSE_ERROR("space");return false;}
 
   // 解析左大括号
-  bool parse_curly_left(const std::string &str, size_t &off) {
+  inline bool parse_curly_left(const std::string &str, size_t &off) {
     PARSE_SPACE();
     if (str[off] != '{')return false;
     off++;
     return true;
   }
   // 解析右大括号
-  bool parse_curly_right(const std::string &str, size_t &off) {
+  inline bool parse_curly_right(const std::string &str, size_t &off) {
     PARSE_SPACE();
     if (str[off] != '}')return false;
     off++;
@@ -236,7 +249,7 @@ namespace reflect {
   }
 
   // 解析左中括号
-  bool parse_bracket_left(const std::string &str, size_t &off) {
+  inline bool parse_bracket_left(const std::string &str, size_t &off) {
     PARSE_SPACE();
     if (str[off] != '[')return false;
     off++;
@@ -244,7 +257,7 @@ namespace reflect {
   }
 
   // 解析右中括号
-  bool parse_bracket_right(const std::string &str, size_t &off) {
+  inline bool parse_bracket_right(const std::string &str, size_t &off) {
     PARSE_SPACE();
     if (str[off] != ']')return false;
     off++;
@@ -252,7 +265,7 @@ namespace reflect {
   }
 
   // 解析冒号
-  bool parse_colon(const std::string &str, size_t &off) {
+  inline bool parse_colon(const std::string &str, size_t &off) {
     PARSE_SPACE();
     if (str[off] != ':')return false;
     off++;
@@ -260,23 +273,26 @@ namespace reflect {
   }
 
   // 解析逗号
-  bool parse_comma(const std::string &str, size_t &off) {
+  inline bool parse_comma(const std::string &str, size_t &off) {
     PARSE_SPACE();
     if (str[off] != ',')return false;
     off++;
     return true;
   }
 
+  // parse函数类型，传入要解析的字符串、偏移量、要赋值的地址
   using parse_func = bool (*)(const std::string &, size_t &off, void *);
 
   // 对于null，调用parse_unknown_field会解析成该类型
   struct null {};
   // 前向声明
   template<typename T>
-  parse_func get_parse_func();
+  inline static parse_func get_parse_func();
 
+  // 反序列化类
   class Deserializer {
    public:
+    // 管理type_id到parse_func的映射
     // 初始化时注册用于解析unknown_field的函数
     inline static std::unordered_map<TypeID, parse_func> handler{
         {type_id<bool>, get_parse_func<bool>()},
@@ -293,13 +309,17 @@ namespace reflect {
         return false;
       }
     }
-    inline static bool parse_unknown_field(const std::string &str, size_t& off, std::any *out) {
+    // 解析一个未知的字段
+    // 如果out是nullptr，则丢弃解析结果
+    inline static bool parse_unknown_field(const std::string &str, size_t &off, std::any *out) {
       PARSE_SPACE();
       switch (str[off]) {
-        // array
+        // 数组
         case '[': {
+          // 左中括号
           parse_bracket_left(str, off);
           std::vector<std::any> va;
+          // 循环解析数组内容
           for (;;) {
             std::any val;
             if (!parse_unknown_field(str, off, &val)) {
@@ -311,6 +331,7 @@ namespace reflect {
               break;
             }
           }
+          // 右中括号
           if (!parse_bracket_right(str, off)) {
             PARSE_ERROR("]");
             return false;
@@ -318,12 +339,15 @@ namespace reflect {
           if (out != nullptr)*out = std::any(std::move(va));
           return true;
         }
-          // object
+          // 对象
         case '{': {
+          // 左大括号
           parse_curly_left(str, off);
           std::unordered_map<std::string, std::any> obj;
+          // 循环解析字段
           while (true) {
             std::string key;
+            // 解析key，是一个string
             if (!parse(type_id<std::string>, str, off, &key)) {
               PARSE_ERROR("key");
               return false;
@@ -332,6 +356,7 @@ namespace reflect {
               PARSE_ERROR(":");
               return false;
             }
+            // 解析value，递归调用parse_unknown_field
             std::any val;
             if (!parse_unknown_field(str, off, &val)) {
               PARSE_ERROR("unknown_field");
@@ -342,6 +367,7 @@ namespace reflect {
               break;
             }
           }
+          // 右大括号
           if (!parse_curly_right(str, off)) {
             PARSE_ERROR("}");
             return false;
@@ -349,7 +375,7 @@ namespace reflect {
           if (out != nullptr)*out = std::any(std::move(obj));
           return true;
         }
-          // string
+          // 字符串
         case '"': {
           std::string key;
           if (!parse(type_id<std::string>, str, off, &key)) {
@@ -372,7 +398,7 @@ namespace reflect {
         }
           // null
         case 'n': {
-          if (str.substr(off, 4) != "null"){
+          if (str.substr(off, 4) != "null") {
             PARSE_ERROR("null");
             return false;
           }
@@ -394,6 +420,7 @@ namespace reflect {
       ERROR << "should not reach here!\n";
       return false;
     }
+    // 注册一个T类型的parse_func到Deserializer的handler中
     template<typename T>
     inline static void register_basic_func() {
       handler[type_id<T>] = get_parse_func<T>();
@@ -401,7 +428,7 @@ namespace reflect {
   };
 
   template<typename T>
-  static T reflect_default_deserialize(const std::string &str) {
+  inline static T reflect_default_deserialize(const std::string &str) {
     size_t off = 0;
     T t;
     if (!Deserializer::parse(type_id<T>, str, off, &t)) {
@@ -410,9 +437,18 @@ namespace reflect {
     return t;
   }
 
+  inline static std::any reflect_deserialize_unknown(const std::string &str) {
+    size_t off = 0;
+    std::any val;
+    if (!Deserializer::parse_unknown_field(str, off, &val)) {
+      PARSE_ERROR("unknown field");
+    }
+    return val;
+  }
+
   // 获取类型T的反序列化函数
   template<typename T>
-  parse_func get_parse_func() {
+  inline static parse_func get_parse_func() {
     // bool类型
     if constexpr (std::is_same_v<T, bool>) {
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
@@ -491,7 +527,7 @@ namespace reflect {
         // 引号
         off += 1;
         // 字符串内容
-        while (str[off] != '"' && str[off - 1] != '\\' && off < str.size())off++;
+        while ((str[off] != '"' || (str[off] == '"' && str[off - 1] == '\\')) && off < str.size())off++;
         if (off >= str.size() || str[off] != '"') {
           PARSE_ERROR("string");
           off = save;
@@ -514,16 +550,21 @@ namespace reflect {
           PARSE_ERROR("[");
           return false;
         }
+        // 循环解析每一个元素
         auto &vec = *static_cast<T *>(ptr);
         vec.clear();
-        value_type v;
+        // 该数组中没有元素
+        if (parse_bracket_right(str, off)){
+          return true;
+        }
         while (true) {
+          value_type v;
           if (!Deserializer::parse(reflect::type_id<value_type>, str, off, &v)) {
             PARSE_ERROR("array_element");
             return false;
           }
-          vec.insert(vec.end(), v);
-          // no comma means end of array
+          vec.insert(vec.end(), std::move(v));
+          // 没有逗号，是最后一个元素
           if (!parse_comma(str, off)) {
             break;
           }
@@ -605,11 +646,17 @@ namespace reflect {
       // 需要先注册std::string以解析key
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         if (!parse_curly_left(str, off)) {
-          PARSE_ERROR("'{'");
+          PARSE_ERROR("{");
           return false;
         }
+        // 该对象没有字段
+        if (parse_curly_right(str, off)) {
+          return true;
+        }
         T &t = *static_cast<T *>(ptr);
+        // 循环解析字段
         while (true) {
+          // 解析key
           std::string key;
           if (!Deserializer::parse(reflect::type_id<std::string>, str, off, &key)) {
             PARSE_ERROR(key);
@@ -619,13 +666,14 @@ namespace reflect {
             PARSE_ERROR(":");
             return false;
           }
-          // 不存在该key时，调用parse_unknown_field以解析未知该value
+          // 不存在该key时，调用parse_unknown_field以解析未知该value并丢弃
           if (!t.has_field(key)) {
             if (!Deserializer::parse_unknown_field(str, off, nullptr)) {
               PARSE_ERROR("unknown field " + key);
               return false;
             }
           } else {
+            // 存在该key时，获取该key对应的type_id、偏移量，然后递归调用parse解析
             size_t offset = t.get_offset_by_name(key);
             reflect::TypeID id = t.get_type_id_by_name(key);
             if (!Deserializer::parse(id, str, off, ((char *) ptr) + offset)) {
@@ -633,11 +681,12 @@ namespace reflect {
               return false;
             }
           }
-          // no comma means end of field
+          // 没有逗号，是最后一个字段
           if (!parse_comma(str, off)) {
             break;
           }
         }
+        // 右大括号
         if (!parse_curly_right(str, off)) {
           PARSE_ERROR("'}'");
           return false;
@@ -756,7 +805,7 @@ public: \
    return it->second;\
   }\
  }\
- static const vector<reflect::FieldInfo>& get_field_info_vec() {return _field_info_vec;}\
+ static const std::vector<reflect::FieldInfo>& get_field_info_vec() {return _field_info_vec;}\
  private:inline static const auto _unique_var = (reflect::Serializer::register_basic_func<type>(),0);\
  inline static const auto _unique_var = (reflect::Deserializer::register_basic_func<type>(), 0)
 
@@ -772,6 +821,7 @@ public: \
 
 // 声明某个字段为反射字段，可以进行初始化，但需要多一个逗号
 // 然后将该字段注册到以上的三种map和一个vector中
+// 用__attribute__((used))避免被编译器优化（gcc/clang）
 #define reflect_field(type, name, ...)\
  public: type name __VA_ARGS__;\
  private:\
