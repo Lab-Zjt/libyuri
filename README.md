@@ -6,11 +6,12 @@ libyuri是一个简单的、基于宏的C++反射库。它只需要包含一个�
 
 支持类型：基础类型、std::string、std::pair、STL可遍历容器（需要`begin()`,`end()`,`value_type`）、以及使用上述类型组合出的类型，以及智能指针（会序列化/反序列化指针指向的内容）。裸指针可以被序列化，但不能被反序列化，因为其生命周期无法管理。
 
+提供反序列化未知结构体的功能，object表示为`unordered_map<string,any>`，number表示为double，null表示为`reflect::null`，string表示为`std::string`。
+
 ## 使用
 
 ```C++
 #include <iostream>
-#include <variant>
 #include "yuri.h"
 
 using namespace std;
@@ -62,5 +63,50 @@ int main() {
   // 前后结果相同
   cout << reflect::reflect_default_serialize(d) << '\n';
   cout << reflect::reflect_default_serialize(o2) << '\n';
+}
+```
+
+树：
+
+```c++
+#include <iostream>
+#include <memory>
+#include "yuri.h"
+
+using namespace std;
+
+template<typename T>
+struct Node {
+  // 泛型声明
+ using_reflect(Node<T>);
+ // 智能指针声明
+ reflect_field(shared_ptr<Node>, left);
+ reflect_field(shared_ptr<Node>, right);
+ reflect_field(T, data);
+ public:
+  Node() : left(nullptr), right(nullptr), data(0) {}
+  Node(int i) : left(nullptr), right(nullptr), data(i) {}
+};
+
+template<typename T>
+struct Tree {
+ using_reflect(Tree<T>);
+ reflect_field(shared_ptr<Node<T>>, root);
+};
+
+int main() {
+  Tree<int> t;
+  t.root = make_shared<Node<int>>(17);
+  t.root->left = make_shared<Node<int>>(26);
+  t.root->right = make_shared<Node<int>>(31);
+  t.root->left->left = make_shared<Node<int>>(42);
+  t.root->left->right = make_shared<Node<int>>(47);
+  t.root->right->left = make_shared<Node<int>>(49);
+  // t.root->right->right = nullptr
+  // nullptr会被序列化为null，null会被反序列化为nullptr
+  auto str = reflect::reflect_default_serialize(t);
+  cout << str << endl;
+  auto t2 = reflect::reflect_default_deserialize<Tree<int>>(str);
+  cout << reflect::reflect_default_serialize(t2) << endl;
 }
 ```

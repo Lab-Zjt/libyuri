@@ -6,6 +6,7 @@
 #include <string_view>
 #include <functional>
 #include <sstream>
+#include <any>
 #include <experimental/type_traits>
 namespace reflect {
   // 强制转换
@@ -216,7 +217,7 @@ namespace reflect {
   }
 
 #define ERROR std::cerr << __FILE__ << ':' << __LINE__ << '[' << __PRETTY_FUNCTION__ << ']'
-#define PARSE_ERROR(what) ERROR << "parse " << what << " failed. str = " << str << ", off = " << off <<'(' << str[off-2] << str[off-1] << str[off] << str[off+1] << str[off + 2]<< ')' << "\n"
+#define PARSE_ERROR(what) ERROR << "parse " << what << " failed. str = " << (std::string(str).insert(off,"\e[31m").insert(str.size(),"\e[0m")) << ", off = " << off  << "\n"
 #define PARSE_SPACE() if (!parse_space(str, off)){PARSE_ERROR("space");return false;}
 
   // 解析左大括号
@@ -268,13 +269,20 @@ namespace reflect {
 
   using parse_func = bool (*)(const std::string &, size_t &off, void *);
 
+  // 对于null，调用parse_unknown_field会解析成该类型
+  struct null {};
   // 前向声明
   template<typename T>
   parse_func get_parse_func();
 
   class Deserializer {
    public:
-    inline static std::unordered_map<TypeID, parse_func> handler;
+    // 初始化时注册用于解析unknown_field的函数
+    inline static std::unordered_map<TypeID, parse_func> handler{
+        {type_id<bool>, get_parse_func<bool>()},
+        {type_id<std::string>, get_parse_func<std::string>()},
+        {type_id<double>, get_parse_func<double>()}
+    };
    public:
     inline static bool parse(reflect::TypeID id, const std::string &str, size_t &off, void *ptr) {
       PARSE_SPACE();
@@ -284,6 +292,107 @@ namespace reflect {
         ERROR << "no such handler\n";
         return false;
       }
+    }
+    inline static bool parse_unknown_field(const std::string &str, size_t& off, std::any *out) {
+      PARSE_SPACE();
+      switch (str[off]) {
+        // array
+        case '[': {
+          parse_bracket_left(str, off);
+          std::vector<std::any> va;
+          for (;;) {
+            std::any val;
+            if (!parse_unknown_field(str, off, &val)) {
+              PARSE_ERROR("unknown_field");
+              return false;
+            }
+            va.emplace_back(std::move(val));
+            if (!parse_comma(str, off)) {
+              break;
+            }
+          }
+          if (!parse_bracket_right(str, off)) {
+            PARSE_ERROR("]");
+            return false;
+          }
+          if (out != nullptr)*out = std::any(std::move(va));
+          return true;
+        }
+          // object
+        case '{': {
+          parse_curly_left(str, off);
+          std::unordered_map<std::string, std::any> obj;
+          while (true) {
+            std::string key;
+            if (!parse(type_id<std::string>, str, off, &key)) {
+              PARSE_ERROR("key");
+              return false;
+            }
+            if (!parse_colon(str, off)) {
+              PARSE_ERROR(":");
+              return false;
+            }
+            std::any val;
+            if (!parse_unknown_field(str, off, &val)) {
+              PARSE_ERROR("unknown_field");
+              return false;
+            }
+            obj[std::move(key)] = std::move(val);
+            if (!parse_comma(str, off)) {
+              break;
+            }
+          }
+          if (!parse_curly_right(str, off)) {
+            PARSE_ERROR("}");
+            return false;
+          }
+          if (out != nullptr)*out = std::any(std::move(obj));
+          return true;
+        }
+          // string
+        case '"': {
+          std::string key;
+          if (!parse(type_id<std::string>, str, off, &key)) {
+            PARSE_ERROR("string");
+            return false;
+          }
+          if (out != nullptr) *out = std::any(std::move(key));
+          return true;
+        }
+          // bool
+        case 't':
+        case 'f': {
+          bool b;
+          if (!parse(type_id<bool>, str, off, &b)) {
+            PARSE_ERROR("bool");
+            return false;
+          }
+          if (out != nullptr) *out = std::any(b);
+          return true;
+        }
+          // null
+        case 'n': {
+          if (str.substr(off, 4) != "null"){
+            PARSE_ERROR("null");
+            return false;
+          }
+          off += 4;
+          if (out != nullptr) *out = std::any(reflect::null{});
+          return true;
+        }
+          // number，一律解析成double
+        default: {
+          double d;
+          if (!parse(type_id<double>, str, off, &d)) {
+            PARSE_ERROR("number");
+            return false;
+          }
+          if (out != nullptr) *out = std::any(d);
+          return true;
+        }
+      }
+      ERROR << "should not reach here!\n";
+      return false;
     }
     template<typename T>
     inline static void register_basic_func() {
@@ -330,6 +439,7 @@ namespace reflect {
           PARSE_ERROR("bool");
           return false;
         }
+        return true;
       };
     }
       // 整数类型，先转为long long，再强转为T
@@ -429,8 +539,6 @@ namespace reflect {
       // pair类型，针对map<K,V>::value_type是pair<const K,V>做了处理，用const_cast强制转换成可变类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_first_t, T>
         && std::experimental::is_detected_v<reflect::has_second_t, T>) {
-      // 需要先注册std::string以解析key
-      Deserializer::register_basic_func<std::string>();
       // 注册first_type解析
       using first_type = typename T::first_type;
       using remove_cv_first_type = std::remove_cv_t<first_type>;
@@ -495,7 +603,6 @@ namespace reflect {
       // reflect类型
     else if constexpr (std::experimental::is_detected_v<reflect::has_get_field_info_t, T>) {
       // 需要先注册std::string以解析key
-      Deserializer::register_basic_func<std::string>();
       return [](const std::string &str, size_t &off, void *ptr) -> bool {
         if (!parse_curly_left(str, off)) {
           PARSE_ERROR("'{'");
@@ -512,11 +619,19 @@ namespace reflect {
             PARSE_ERROR(":");
             return false;
           }
-          size_t offset = t.get_offset_by_name(key);
-          reflect::TypeID id = t.get_type_id_by_name(key);
-          if (!Deserializer::parse(id, str, off, ((char *) ptr) + offset)) {
-            PARSE_ERROR(key);
-            return false;
+          // 不存在该key时，调用parse_unknown_field以解析未知该value
+          if (!t.has_field(key)) {
+            if (!Deserializer::parse_unknown_field(str, off, nullptr)) {
+              PARSE_ERROR("unknown field " + key);
+              return false;
+            }
+          } else {
+            size_t offset = t.get_offset_by_name(key);
+            reflect::TypeID id = t.get_type_id_by_name(key);
+            if (!Deserializer::parse(id, str, off, ((char *) ptr) + offset)) {
+              PARSE_ERROR(key);
+              return false;
+            }
           }
           // no comma means end of field
           if (!parse_comma(str, off)) {
@@ -547,7 +662,6 @@ namespace reflect {
           PARSE_ERROR("pointer");
           return false;
         }
-
         return true;
       };
     } else {
@@ -566,6 +680,7 @@ namespace reflect {
 // 由偏移量获取字段、由字段名获取字段、判断字段是否某一类型、获取全部字段信息这四类方法的声明
 #define using_reflect_common(type) \
 public: \
+  bool has_field(std::string_view field_name){return _name_to_offset.find(field_name) != _name_to_offset.end();}\
  template<typename ___T>\
  decltype(auto) get_field_by_offset(size_t offset){\
    return this->*reflect::offset_to_member_pointer<_reflect_type, ___T>(offset);\
