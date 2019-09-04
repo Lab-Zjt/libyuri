@@ -9,6 +9,7 @@
 #include <any>
 #include <memory>
 #include <experimental/type_traits>
+
 namespace reflect {
   /*
    * 一些基础设施
@@ -803,6 +804,21 @@ public: \
     throw std::runtime_error("unknown_field");\
   }else{\
    return it->second;\
+  }\
+ }\
+ std::string get_field_string(std::string_view field_name){\
+  if (auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
+    throw std::runtime_error("unknown_field");\
+  } else {\
+    return Serializer::serialize(it->second, ((char*)this) + _name_to_offset[field_name]);\
+  }\
+ }\
+ bool set_field_from_string(std::string_view field_name, const std::string& value){\
+  if (auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
+    throw std::runtime_error("unknown_field");\
+  } else {\
+    size_t off = 0;\
+    return Deserializer::parse(it->second, value , off, ((char*)this) + _name_to_offset[field_name]);\
   }\
  }\
  static const std::vector<reflect::FieldInfo>& get_field_info_vec() {return _field_info_vec;}\
