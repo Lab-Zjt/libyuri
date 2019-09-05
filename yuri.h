@@ -421,6 +421,7 @@ namespace reflect {
   }
 }
 
+#include <iostream>
 
 #define PARSE_ERROR(what) YURI_ERROR << "parse " << what << " failed. str = " << (std::string(str).insert(off,"\e[31m").insert(str.size(),"\e[0m")) << ", off = " << off  << "\n"
 #define PARSE_SPACE() if (!parse_space(str, off)){PARSE_ERROR("space");return false;}
@@ -440,15 +441,27 @@ namespace reflect {
     inline static bool deserialize(const std::string &, size_t &off, void *ptr);
     inline bool parse_space(const std::string &str, size_t &off);
 
+    inline bool isspace(char c) {
+      switch (c) {
+        case '\t':
+        case '\n':
+        case '\f':
+        case '\v':
+        case '\r':
+        case ' ':return true;
+        default:return false;
+      }
+    }
+
     // 反序列化类
     class Deserializer {
      public:
       // 管理type_id到parse_func的映射
       // 初始化时注册用于解析unknown_field的函数
       inline static std::unordered_map<TypeID, parse_func> handler{
-          {type_id < bool > , deserialize<bool>},
-          {type_id < std::string > , deserialize<std::string>},
-          {type_id < double > , deserialize<double>}
+          {type_id<bool>, deserialize<bool>},
+          {type_id<std::string>, deserialize<std::string>},
+          {type_id<double>, deserialize<double>}
       };
      public:
       inline static bool parse(reflect::TypeID id, const std::string &str, size_t &off, void *ptr) {
@@ -576,7 +589,7 @@ namespace reflect {
         // 引号
         off += 1;
         // 字符串内容
-        while ((str[off] != '"' || (str[off] == '"' && str[off - 1] == '\\')) && off < str.size())off++;
+        while ((str[off] != '"' || str[off - 1] == '\\') && off < str.size())off++;
         if (off >= str.size() || str[off] != '"') {
           PARSE_ERROR("string");
           off = save;
@@ -786,7 +799,7 @@ namespace reflect {
           while (true) {
             std::string key;
             // 解析key，是一个string
-            if (!parse(type_id<std::string>, str, off, &key)) {
+            if (!deserialize<std::string>(str, off, &key)) {
               PARSE_ERROR("key");
               return false;
             }
@@ -816,7 +829,7 @@ namespace reflect {
           // 字符串
         case '"': {
           std::string key;
-          if (!parse(type_id<std::string>, str, off, &key)) {
+          if (!deserialize<std::string>(str, off, &key)) {
             PARSE_ERROR("string");
             return false;
           }
@@ -827,7 +840,7 @@ namespace reflect {
         case 't':
         case 'f': {
           bool b;
-          if (!parse(type_id<bool>, str, off, &b)) {
+          if (!deserialize<bool>(str, off, &b)) {
             PARSE_ERROR("bool");
             return false;
           }
@@ -847,7 +860,7 @@ namespace reflect {
           // number，一律解析成double
         default: {
           double d;
-          if (!parse(type_id<double>, str, off, &d)) {
+          if (!deserialize<double>(str, off, &d)) {
             PARSE_ERROR("number");
             return false;
           }
