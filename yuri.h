@@ -161,7 +161,7 @@ public: \
  }\
  static reflect::TypeID get_type_id_by_name(std::string_view field_name){\
   if(auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
-    throw std::runtime_error("unknown_field");\
+    return nullptr;\
   }else{\
    return it->second;\
   }\
@@ -458,11 +458,7 @@ namespace reflect {
      public:
       // 管理type_id到parse_func的映射
       // 初始化时注册用于解析unknown_field的函数
-      inline static std::unordered_map<TypeID, parse_func> handler{
-          {type_id<bool>, deserialize<bool>},
-          {type_id<std::string>, deserialize<std::string>},
-          {type_id<double>, deserialize<double>}
-      };
+      inline static std::unordered_map<TypeID, parse_func> handler;
      public:
       inline static bool parse(reflect::TypeID id, const std::string &str, size_t &off, void *ptr) {
         PARSE_SPACE();
@@ -581,21 +577,20 @@ namespace reflect {
           PARSE_ERROR("string");
           return false;
         }
-        if (str[off] != '"') {
+        // 引号
+        if (!parse_ch('"', str, off)) {
           PARSE_ERROR("string");
           return false;
         }
         auto save = off;
-        // 引号
-        off += 1;
         // 字符串内容
         while ((str[off] != '"' || str[off - 1] == '\\') && off < str.size())off++;
-        if (off >= str.size() || str[off] != '"') {
+        if (off >= str.size()) {
           PARSE_ERROR("string");
           off = save;
           return false;
         }
-        t = str.substr(save + 1, off - (save + 1));
+        t = str.substr(save, off - save);
         // 引号
         off += 1;
         return true;
@@ -716,7 +711,7 @@ namespace reflect {
             return false;
           }
           // 不存在该key时，调用parse_unknown_field以解析未知该value并丢弃
-          if (!t.has_field(key)) {
+          if (auto id = t.get_type_id_by_name(key); id == nullptr) {
             if (!Deserializer::parse_unknown_field(str, off, nullptr)) {
               PARSE_ERROR("unknown field " + key);
               return false;
@@ -724,7 +719,6 @@ namespace reflect {
           } else {
             // 存在该key时，获取该key对应的type_id、偏移量，然后递归调用parse解析
             size_t offset = t.get_offset_by_name(key);
-            reflect::TypeID id = t.get_type_id_by_name(key);
             if (!Deserializer::parse(id, str, off, ((char *) ptr) + offset)) {
               PARSE_ERROR(key);
               return false;

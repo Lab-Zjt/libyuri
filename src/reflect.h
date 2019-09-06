@@ -161,7 +161,7 @@ public: \
  }\
  static reflect::TypeID get_type_id_by_name(std::string_view field_name){\
   if(auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
-    throw std::runtime_error("unknown_field");\
+    return nullptr;\
   }else{\
    return it->second;\
   }\
