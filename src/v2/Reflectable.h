@@ -14,14 +14,8 @@
 #include "FieldInfo.h"
 #include "TypeCast.h"
 #include "UniqueVariable.h"
-#include "StringSerializer.h"
+#include "RegisterConfig.h"
 namespace yuri {
-
-  template<typename T>
-  inline void outputRegister() {
-    SerializeFunctionMap<StringOutput>::getInstance().registerSerializeFunction<T>();
-  }
-
   template<typename T>
   class Reflectable {
     // Type Info Storage
@@ -67,7 +61,7 @@ namespace yuri {
       return reflectInfo().nameToTypeId.find(name) != reflectInfo().nameToTypeId.end();
     }
     std::string toString() const {
-      return StringOutput().serialize(*this);
+      return StringSerializer().serialize(*this);
     }
   };
 

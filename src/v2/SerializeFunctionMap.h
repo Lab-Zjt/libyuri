@@ -10,11 +10,11 @@
 namespace yuri {
   template<typename Output>
   class SerializeFunctionMap {
-    using SerializeFunction = void (*)(OutputBase<Output> *output, const void *object);
+    using SerializeFunction = void (*)(Output *output, const void *object);
    private:
     std::unordered_map<TypeId, SerializeFunction> functions;
     template<typename T>
-    static void output(OutputBase<Output> *output, const void *object) {
+    static void output(Output *output, const void *object) {
       output->output(*static_cast<const T *>(object));
     }
    public:

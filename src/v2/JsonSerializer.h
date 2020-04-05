@@ -1,25 +1,23 @@
 /**
-  * @file   StringSerializer.h 
+  * @file   JsonSerializer.h 
   * @author sora
   * @date   2020/4/5
   */
 
-#ifndef LIBYURI_SRC_V2_STRINGSERIALIZER_H_
-#define LIBYURI_SRC_V2_STRINGSERIALIZER_H_
-
+#ifndef LIBYURI_SRC_V2_JSONSERIALIZER_H_
+#define LIBYURI_SRC_V2_JSONSERIALIZER_H_
+#include <memory>
 #include "Serializer.h"
 #include "TypeTraits/RangeTrait.h"
-#include "TypeTraits/OutputStreamOverloadTraits.h"
 #include "SerializeFunctionMap.h"
-#include <list>
-#include <memory>
+#include "TypeTraits/OutputStreamOverloadTraits.h"
 
 namespace yuri {
 
   template<typename T>
   class Reflectable;
 
-  class StringOutput : public OutputBase<StringOutput, std::string> {
+  class JsonOutput : public OutputBase<JsonOutput, std::string> {
     std::stringstream ss;
    private:
     template<typename T>
@@ -39,7 +37,6 @@ namespace yuri {
       ss << ']';
     }
    public:
-
     void output(std::string_view str) {
       stringOutput(str);
     }
@@ -56,7 +53,6 @@ namespace yuri {
       if (ptr == nullptr) {
         ss << "null";
       } else {
-        ss << '&';
         output(*ptr);
       }
     }
@@ -73,11 +69,11 @@ namespace yuri {
 
     template<typename K, typename V>
     void output(const std::pair<K, V> &pair) {
-      ss << '<';
+      ss << R"({"1":)";
       output(pair.first);
-      ss << ':';
+      ss << R"(,"2":)";
       output(pair.second);
-      ss << '>';
+      ss << '}';
     }
 
     template<typename T, typename Enable = std::enable_if_t<is_range_v<T>>>
@@ -92,9 +88,10 @@ namespace yuri {
       for (auto &&info : reflectable.getFieldInfoList()) {
         if (info.offset >= sizeof(T))break;
         atLeastWriteOnce = true;
-        ss << info.name << '=';
-        SerializeFunctionMap<StringOutput>::getInstance().getSerializeFunction(info.id)(this,
-                                                                                        info.getFieldPtr(&reflectable));
+        stringOutput(info.name);
+        ss << ':';
+        SerializeFunctionMap<JsonOutput>::getInstance().getSerializeFunction(info.id)(this,
+                                                                                      info.getFieldPtr(&reflectable));
         ss << ',';
       }
       if (atLeastWriteOnce) ss.seekp(-1, std::ios::cur);
@@ -111,8 +108,7 @@ namespace yuri {
     }
   };
 
-  using StringSerializer = Serializer<StringOutput>;
-
+  using JsonSerializer = Serializer<JsonOutput>;
 }
 
-#endif //LIBYURI_SRC_V2_STRINGSERIALIZER_H_
+#endif //LIBYURI_SRC_V2_JSONSERIALIZER_H_

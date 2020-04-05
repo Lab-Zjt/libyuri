@@ -53,4 +53,5 @@ int main() {
   output(a);
   B b;
   cout << b.toString() << endl;
+  cout << JsonSerializer().serialize(b) << endl;
 }
