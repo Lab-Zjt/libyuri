@@ -177,7 +177,7 @@ public: \
   if (auto it = _name_to_type_id.find(field_name); it == _name_to_type_id.end()){\
     throw std::runtime_error("unknown_field");\
   } else {\
-    return Serializer::serialize_by_type_id(it->second, ((char*)this) + _name_to_offset[field_name]);\
+    return reflect::Serializer::serialize_by_type_id(it->second, ((char*)this) + _name_to_offset[field_name]);\
   }\
  }\
  bool set_field_from_string(std::string_view field_name, const std::string& value){\
@@ -185,7 +185,7 @@ public: \
     throw std::runtime_error("unknown_field");\
   } else {\
     size_t off = 0;\
-    return Deserializer::parse(it->second, value , off, ((char*)this) + _name_to_offset[field_name]);\
+    return reflect::Deserializer::parse(it->second, value , off, ((char*)this) + _name_to_offset[field_name]);\
   }\
  }\
  static const std::vector<reflect::FieldInfo>& get_field_info_vec() {return _field_info_vec;}\
